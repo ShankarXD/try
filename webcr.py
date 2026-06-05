@@ -195,7 +195,7 @@ class WordPressDefacer:
                         soup = BeautifulSoup(edit_r.text, 'html.parser')
                         file_input = soup.find('input', {'name': 'file'})
                         if file_input:
-file_path = file_input.get('value', '')
+                           file_path = file_input.get('value', '')
                             # Update index.php or header.php
                             update_data = {
                                 'file': file_path,
